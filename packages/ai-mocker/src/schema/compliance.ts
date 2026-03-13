@@ -9,7 +9,7 @@ export type ValidationResult = {
 };
 
 /** Shared Ajv instance with format support pre-configured. */
-const ajv = addFormats(new Ajv({ allErrors: true }));
+const ajv = addFormats(new Ajv({ allErrors: true, strict: false }));
 
 /**
  * Validate a candidate value against a JSON Schema using Ajv.
