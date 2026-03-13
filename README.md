@@ -101,6 +101,19 @@ the URL. If you have a base path of `api/v1` and your path is defined as `hello`
 confuses some, but the other way was confusing to others. Check the default output of Prism CLI to
 see what URLs you have available.
 
+### 🤖 AI Mocker (Experimental)
+
+Prism can use an LLM to generate **context-aware, stateful** mock responses instead of random faker data. The AI remembers previous interactions, so a `POST` followed by a `GET` returns logically consistent data.
+
+```bash
+# Set your API key, then launch with --ai
+export OPENAI_API_KEY="sk-..."
+prism mock petstore.yaml --ai
+```
+
+- **[User Guide](docs/guides/ai-mocker-user-guide.md)** — Quickstart, environment variables, how it works, troubleshooting
+- **[Contributor Guide](docs/guides/ai-mocker-dev-guide.md)** — Architecture, local dev workflow, common pitfalls, testing strategy
+
 ### 🚧 Roadmap
 
 - [x] Content Negotiation
