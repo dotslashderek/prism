@@ -1,5 +1,6 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { JSONSchema7, JSONSchema7Definition } from 'json-schema';
+import type { Logger } from 'pino';
 import type { GeneratorAgentInput, GeneratorAgentOutput, Memory } from './types';
 import { convertJsonSchemaToZod } from '../schema/json-schema-to-zod';
 import { validateWithAjv } from '../schema/compliance';
@@ -76,6 +77,8 @@ export const buildSystemPrompt = (input: GeneratorAgentInput): string => {
     sections.push('', '## Enum Constraints', ...enumConstraints);
   }
 
+  sections.push('', '## Target JSON Schema', JSON.stringify(schema, null, 2));
+
   sections.push('', `## Intent: ${intent}`, INTENT_GUIDANCE[intent] ?? '');
 
   return sections.join('\n');
@@ -94,18 +97,24 @@ export const buildSystemPrompt = (input: GeneratorAgentInput): string => {
 export const generatorAgent = async (
   input: GeneratorAgentInput,
   chatModel: BaseChatModel,
+  logger: Logger,
 ): Promise<GeneratorAgentOutput> => {
   try {
-    const zodSchema = convertJsonSchemaToZod(input.schema);
     const prompt = buildSystemPrompt(input);
 
-    const structured = chatModel.withStructuredOutput(zodSchema);
+    const structured = chatModel.withStructuredOutput(input.schema, { name: 'generate_mock_data' });
     const body = await structured.invoke(prompt);
 
-    const { valid } = validateWithAjv(body, input.schema);
+    const { valid, errors } = validateWithAjv(body, input.schema);
+    if (!valid) {
+      logger.warn({ step: 'ajv_validation', body, errors }, 'Ajv validation failed for LLM output');
+    } else {
+      logger.info({ step: 'llm_success' }, 'LLM generation successful and valid');
+    }
 
     return { body, compliant: valid, source: 'llm' };
-  } catch {
+  } catch (err) {
+    logger.error({ step: 'llm_error', err: String(err) }, 'LLM generation threw an error');
     return { body: undefined, compliant: false, source: 'fallback' };
   }
 };
