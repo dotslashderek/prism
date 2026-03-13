@@ -35,13 +35,17 @@ describe('orchestrate', () => {
     pathParamConstraints: {},
   };
 
-  const makeDeps = (): OrchestratorDeps => ({
+  const makeDeps = (overrides?: Partial<OrchestratorDeps>): OrchestratorDeps => ({
     store: {} as any,
-    embedder: {} as any,
+    embedder: { embed: jest.fn() } as any,
     summarizer: jest.fn() as any,
     chatModel: {} as any,
     fakerFallback: jest.fn().mockReturnValue({ id: 99, name: 'faker-fallback' }),
     logger: { error: jest.fn(), info: jest.fn(), warn: jest.fn() } as any,
+    resourceMutex: { acquire: jest.fn().mockResolvedValue(jest.fn()) } as any,
+    responseCache: { get: jest.fn().mockReturnValue(undefined), set: jest.fn(), invalidate: jest.fn() } as any,
+    llmLimiter: (fn: () => Promise<any>) => fn(),
+    ...overrides,
   });
 
   beforeEach(() => {
@@ -195,5 +199,77 @@ describe('orchestrate', () => {
     // Give the .catch handler a tick to run
     await new Promise(r => setTimeout(r, 10));
     expect(deps.logger.error).toHaveBeenCalledWith({ err: memoryError }, 'Memory agent failed');
+  });
+
+  // --- New: concurrency, cache, timeout tests ---
+
+  it('returns cached response on cache hit (skips LLM)', async () => {
+    const cachedBody = { id: 7, name: 'Cached' };
+    const deps = makeDeps({
+      responseCache: {
+        get: jest.fn().mockReturnValue(cachedBody),
+        set: jest.fn(),
+        invalidate: jest.fn(),
+      } as any,
+    });
+
+    const result = await orchestrate('GET /users', makeRequest('GET', '/users'), schema, deps);
+
+    expect(result).toEqual(cachedBody);
+    // Generator should NOT have been called
+    expect(mockGeneratorAgent).not.toHaveBeenCalled();
+  });
+
+  it('acquires mutex for mutation intent and releases after', async () => {
+    const releaseFn = jest.fn();
+    const deps = makeDeps({
+      resourceMutex: { acquire: jest.fn().mockResolvedValue(releaseFn) } as any,
+    });
+
+    await orchestrate('POST /users', makeRequest('POST', '/users'), schema, deps);
+
+    expect(deps.resourceMutex.acquire).toHaveBeenCalledWith('/users');
+    expect(releaseFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not acquire mutex for read intent', async () => {
+    const deps = makeDeps();
+
+    await orchestrate('GET /users', makeRequest('GET', '/users'), schema, deps);
+
+    expect(deps.resourceMutex.acquire).not.toHaveBeenCalled();
+  });
+
+  it('invalidates cache after successful mutation', async () => {
+    const deps = makeDeps();
+
+    await orchestrate('POST /users', makeRequest('POST', '/users'), schema, deps);
+
+    expect(deps.responseCache.invalidate).toHaveBeenCalledWith('/users');
+  });
+
+  it('populates cache after successful response', async () => {
+    const deps = makeDeps();
+
+    await orchestrate('GET /users', makeRequest('GET', '/users'), schema, deps);
+
+    expect(deps.responseCache.set).toHaveBeenCalledWith(
+      expect.any(String),
+      { id: 1, name: 'Alice' },
+    );
+  });
+
+  it('falls back to faker on pipeline timeout', async () => {
+    const deps = makeDeps();
+    // Make context agent hang to trigger pipeline timeout
+    mockContextAgent.mockImplementation(() => new Promise(() => {}));
+
+    const result = await orchestrate('GET /users', makeRequest('GET', '/users'), schema, deps);
+
+    expect(result).toEqual({ id: 99, name: 'faker-fallback' });
+    expect((deps.logger.warn as jest.Mock)).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'pipeline' }),
+      expect.stringContaining('timeout'),
+    );
   });
 });
