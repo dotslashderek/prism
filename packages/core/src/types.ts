@@ -50,7 +50,7 @@ export type IPrismComponents<Resource, Input, Output, Config extends IPrismConfi
     resource: Resource;
     input: IPrismInput<Input>;
     config: Config['mock'];
-  }) => ReaderEither<Logger, Error, Output>;
+  }) => ReaderTaskEither<Logger, Error, Output>;
   logger: Logger;
 };
 
