@@ -1,3 +1,5 @@
+import type { JSONSchema7 } from 'json-schema';
+
 /** Incoming HTTP request shape for agent processing. */
 export type HttpRequest = {
   readonly method: string;
@@ -39,3 +41,22 @@ export type ContextAgentOutput = {
   readonly resourceId?: string;
   readonly pathParamConstraints: Record<string, string>;
 };
+
+/** Intent derived from the HTTP method — drives generation strategy. */
+export type Intent = 'read' | 'mutation' | 'deletion';
+
+/** Input to the generator agent. */
+export type GeneratorAgentInput = {
+  readonly schema: JSONSchema7;
+  readonly request: HttpRequest;
+  readonly context: ContextAgentOutput;
+  readonly intent: Intent;
+};
+
+/** Output from the generator agent. */
+export type GeneratorAgentOutput = {
+  readonly body: unknown;
+  readonly compliant: boolean;
+  readonly source: 'llm' | 'fallback';
+};
+
