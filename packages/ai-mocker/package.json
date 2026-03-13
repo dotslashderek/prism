@@ -21,6 +21,8 @@
     "@langchain/core": "^1.1.32",
     "@langchain/ollama": "^1.2.6",
     "@langchain/openai": "^1.2.13",
+    "ajv": "^8.4.0",
+    "ajv-formats": "^2.1.1",
     "better-sqlite3": "^11.0.0",
     "fp-ts": "^2.11.5",
     "lru-cache": "^11.2.7",
