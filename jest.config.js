@@ -67,6 +67,19 @@ module.exports = {
         ],
       },
     },
+    {
+      ...projectDefault,
+      displayName: 'AI-MOCKER',
+      testMatch: ['<rootDir>/packages/ai-mocker/src/**/__tests__/*.*.ts'],
+      transform: {
+        '^.+\\.tsx?$': [
+          'ts-jest',
+          {
+            tsconfig: '<rootDir>/packages/tsconfig.test.json',
+          },
+        ],
+      },
+    },
   ],
   collectCoverageFrom: ['**/src/**/*.{ts,tsx}', '!**/src/**/__tests__/**/*.{ts,tsx}'],
 };
