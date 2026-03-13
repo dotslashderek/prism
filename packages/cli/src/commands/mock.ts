@@ -40,10 +40,15 @@ const mockCommand: CommandModule = {
           demandOption: true,
           default: null
         },
+        ai: {
+          description: 'Use AI-powered response generation instead of faker-based mocking.',
+          boolean: true,
+          default: false,
+        },
       }),
   handler: async parsedArgs => {
     parsedArgs.jsonSchemaFakerFillProperties = parsedArgs['json-schema-faker-fillProperties'];
-    const { multiprocess, dynamic, port, host, cors, document, errors, verboseLevel, ignoreExamples, seed, jsonSchemaFakerFillProperties } =
+    const { multiprocess, dynamic, port, host, cors, document, errors, verboseLevel, ignoreExamples, seed, ai, jsonSchemaFakerFillProperties } =
       parsedArgs as unknown as CreateMockServerOptions;
 
     const createPrism = multiprocess ? createMultiProcessPrism : createSingleProcessPrism;
@@ -58,6 +63,7 @@ const mockCommand: CommandModule = {
       verboseLevel,
       ignoreExamples,
       seed,
+      ai,
       jsonSchemaFakerFillProperties,
     };
 
