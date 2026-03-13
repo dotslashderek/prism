@@ -15,11 +15,12 @@ import * as E from 'fp-ts/Either';
 import * as Record from 'fp-ts/Record';
 import { pipe } from 'fp-ts/function';
 import * as A from 'fp-ts/Array';
-import { sequenceT } from 'fp-ts/Apply';
 import * as R from 'fp-ts/Reader';
 import * as O from 'fp-ts/Option';
 import * as RE from 'fp-ts/ReaderEither';
-import { get, groupBy, isNumber, isString, keyBy, mapValues, partial, pick } from 'lodash';
+import * as TE from 'fp-ts/TaskEither';
+import * as RTE from 'fp-ts/ReaderTaskEither';
+import { get, groupBy, isNumber, isString, keyBy, mapValues, pick } from 'lodash';
 import { Logger } from 'pino';
 import { is } from 'type-is';
 import {
@@ -39,6 +40,7 @@ import { IHttpNegotiationResult } from './negotiator/types';
 import { runCallback } from './callback/callbacks';
 import { logRequest, logResponse } from '../utils/logger';
 import { JSONSchema } from '../types';
+import { createAiPayloadGenerator } from '@stoplight/prism-ai-mocker';
 import {
   decodeUriEntities,
   deserializeFormBody,
@@ -51,51 +53,60 @@ import { NonEmptyArray } from 'fp-ts/NonEmptyArray';
 export { resetGenerator as resetJSONSchemaGenerator } from './generator/JSONSchema';
 
 const eitherRecordSequence = Record.sequence(E.Applicative);
-const eitherSequence = sequenceT(E.Apply);
 
 const mock: IPrismComponents<IHttpOperation, IHttpRequest, IHttpResponse, IHttpMockConfig>['mock'] = ({
   resource,
   input,
   config,
 }) => {
-  function createPayloadGenerator(config: IHttpOperationConfig, resource: IHttpOperation): PayloadGenerator {
+  function createSyncPayloadGenerator(config: IHttpOperationConfig, resource: IHttpOperation): (source: JSONSchema) => E.Either<Error, unknown> {
     return (source: JSONSchema) => {
       return config.dynamic
       ? generate(resource, resource['__bundled__'], source, config.seed)
       : generateStatic(resource, source);
     };
   }
-  const payloadGenerator = createPayloadGenerator(config, resource);
 
-  return pipe(
-    withLogger(logger => {
-      logRequest({ logger, prefix: `${chalk.grey('< ')}`, ...pick(input.data, 'body', 'headers') });
+  const syncGenerator = createSyncPayloadGenerator(config, resource);
+  const payloadGenerator: PayloadGenerator = config.ai
+    ? createAiPayloadGenerator(syncGenerator, (null as unknown as Logger)) // logger injected below in pipeline
+    : (source: JSONSchema) => TE.fromEither(syncGenerator(source));
 
-      // setting default values
-      const acceptMediaType = input.data.headers && caseless(input.data.headers).get('accept');
-      if (!config.mediaTypes && acceptMediaType) {
-        logger.info(`Request contains an accept header: ${acceptMediaType}`);
-        config.mediaTypes = acceptMediaType.split(',');
-      }
-      return config;
-    }),
-    R.chain(mockConfig => negotiateResponse(mockConfig, input, resource)),
-    R.chain(result => negotiateDeprecation(result, resource)),
-    R.chain(result => assembleResponse(result, payloadGenerator, config.ignoreExamples ?? false)),
-    R.chain(
-      response =>
-        /*  Note: This is now just logging the errors without propagating them back. This might be moved as a first
-        level concept in Prism.
-    */
-        logger =>
-          pipe(
-            response,
-            E.map(mockResponseLogger(logger)),
-            E.map(response => runCallbacks({ resource, request: input.data, response })(logger)),
-            E.chain(() => response)
-          )
-    )
-  );
+  return logger => {
+    const aiPayloadGenerator: PayloadGenerator = config.ai
+      ? createAiPayloadGenerator(syncGenerator, logger)
+      : payloadGenerator;
+
+    logRequest({ logger, prefix: `${chalk.grey('< ')}`, ...pick(input.data, 'body', 'headers') });
+
+    // setting default values
+    const acceptMediaType = input.data.headers && caseless(input.data.headers).get('accept');
+    if (!config.mediaTypes && acceptMediaType) {
+      logger.info(`Request contains an accept header: ${acceptMediaType}`);
+      config.mediaTypes = acceptMediaType.split(',');
+    }
+
+    const negotiationResult = pipe(
+      negotiateResponse(config, input, resource),
+      R.chain(result => negotiateDeprecation(result, resource)),
+    )(logger);
+
+    const negotiationTE: TE.TaskEither<Error, IHttpNegotiationResult> = TE.fromEither(negotiationResult);
+
+    return pipe(
+      negotiationTE,
+      TE.chain(result => assembleResponse(result, aiPayloadGenerator, config.ignoreExamples ?? false)),
+      TE.chain(response =>
+        pipe(
+          TE.right<Error, IHttpResponse>(mockResponseLogger(logger)(response)),
+          TE.map(response => {
+            runCallbacks({ resource, request: input.data, response })(logger);
+            return response;
+          }),
+        )
+      ),
+    );
+  };
 };
 
 function mockResponseLogger(logger: Logger) {
@@ -318,72 +329,71 @@ function negotiateDeprecation(
   return RE.fromEither(result);
 }
 
-const assembleResponse =
-  (
-    result: E.Either<Error, IHttpNegotiationResult>,
-    payloadGenerator: PayloadGenerator,
-    ignoreExamples: boolean
-  ): R.Reader<Logger, E.Either<Error, IHttpResponse>> =>
-  logger =>
-    pipe(
-      E.Do,
-      E.bind('negotiationResult', () => result),
-      E.bind('mockedData', ({ negotiationResult }) =>
-        eitherSequence(
-          computeBody(negotiationResult, payloadGenerator, ignoreExamples),
-          computeMockedHeaders(negotiationResult.headers || [], payloadGenerator)
-        )
-      ),
-      E.map(({ mockedData: [mockedBody, mockedHeaders], negotiationResult }) => {
-        const response: IHttpResponse = {
-          statusCode: parseInt(negotiationResult.code),
-          headers: {
-            ...mockedHeaders,
-            ...(negotiationResult.mediaType && {
-              'Content-type': negotiationResult.mediaType,
-            }),
-            ...(negotiationResult.deprecated && {
-              deprecation: 'true',
-            }),
-          },
-          body: mockedBody,
-        };
-
-        logger.success(`Responding with the requested status code ${response.statusCode}`);
-
-        return response;
-      })
-    );
+const assembleResponse = (
+  negotiationResult: IHttpNegotiationResult,
+  payloadGenerator: PayloadGenerator,
+  ignoreExamples: boolean
+): TE.TaskEither<Error, IHttpResponse> =>
+  pipe(
+    TE.Do,
+    TE.bind('mockedBody', () => computeBody(negotiationResult, payloadGenerator, ignoreExamples)),
+    TE.bind('mockedHeaders', () => computeMockedHeaders(negotiationResult.headers || [], payloadGenerator)),
+    TE.map(({ mockedBody, mockedHeaders }) => {
+      const response: IHttpResponse = {
+        statusCode: parseInt(negotiationResult.code),
+        headers: {
+          ...mockedHeaders,
+          ...(negotiationResult.mediaType && {
+            'Content-type': negotiationResult.mediaType,
+          }),
+          ...(negotiationResult.deprecated && {
+            deprecation: 'true',
+          }),
+        },
+        body: mockedBody,
+      };
+      return response;
+    })
+  );
 
 function isINodeExample(nodeExample: ContentExample | undefined): nodeExample is INodeExample {
   return !!nodeExample && 'value' in nodeExample;
 }
 
-function computeMockedHeaders(headers: IHttpHeaderParam[], payloadGenerator: PayloadGenerator) {
-  return eitherRecordSequence(
-    mapValues(
-      keyBy(headers, h => h.name),
-      header => {
-        if (header.schema) {
-          if (header.examples && header.examples.length > 0) {
-            const example = header.examples[0];
-            if (isINodeExample(example)) {
-              return E.right(example.value);
-            }
-          } else {
-            return pipe(
-              payloadGenerator(header.schema),
-              mapPayloadGeneratorError('header'),
-              E.map(example => {
-                if (isNumber(example) || isString(example)) return example;
-                return null;
-              })
-            );
-          }
+function computeMockedHeaders(headers: IHttpHeaderParam[], payloadGenerator: PayloadGenerator): TE.TaskEither<Error, Dictionary<unknown>> {
+  // Process headers sequentially, building up a record
+  const headerPairs = headers.map(header => {
+    if (header.schema) {
+      if (header.examples && header.examples.length > 0) {
+        const example = header.examples[0];
+        if (isINodeExample(example)) {
+          return TE.right([header.name, example.value] as const);
         }
-        return E.right(null);
+      } else {
+        return pipe(
+          payloadGenerator(header.schema),
+          TE.mapLeft(mapPayloadGeneratorErrorFn('header')),
+          TE.map(example => {
+            if (isNumber(example) || isString(example)) return [header.name, example] as const;
+            return [header.name, null] as const;
+          }),
+        );
       }
-    )
+    }
+    return TE.right([header.name, null] as const);
+  });
+
+  return headerPairs.reduce<TE.TaskEither<Error, Dictionary<unknown>>>(
+    (acc, te) => pipe(
+      acc,
+      TE.chain(record =>
+        pipe(
+          te,
+          TE.map(([name, value]: readonly [string, unknown]) => ({ ...record, [name]: value }))
+        )
+      )
+    ),
+    TE.right({} as Dictionary<unknown>)
   );
 }
 
@@ -391,22 +401,22 @@ function computeBody(
   negotiationResult: Pick<IHttpNegotiationResult, 'schema' | 'mediaType' | 'bodyExample'>,
   payloadGenerator: PayloadGenerator,
   ignoreExamples: boolean
-): E.Either<Error, unknown> {
+): TE.TaskEither<Error, unknown> {
   if (
     !ignoreExamples &&
     isINodeExample(negotiationResult.bodyExample) &&
     negotiationResult.bodyExample.value !== undefined
   ) {
-    return E.right(negotiationResult.bodyExample.value);
+    return TE.right(negotiationResult.bodyExample.value);
   }
   if (negotiationResult.schema) {
-    return pipe(payloadGenerator(negotiationResult.schema), mapPayloadGeneratorError('body'));
+    return pipe(payloadGenerator(negotiationResult.schema), TE.mapLeft(mapPayloadGeneratorErrorFn('body')));
   }
-  return E.right(undefined);
+  return TE.right(undefined);
 }
 
-const mapPayloadGeneratorError = (source: string) =>
-  E.mapLeft<Error, Error>(err => {
+const mapPayloadGeneratorErrorFn = (source: string) =>
+  (err: Error): Error => {
     if (err instanceof SchemaTooComplexGeneratorError) {
       return ProblemJsonError.fromTemplate(
         SCHEMA_TOO_COMPLEX,
@@ -414,6 +424,6 @@ const mapPayloadGeneratorError = (source: string) =>
       );
     }
     return err;
-  });
+  };
 
 export default mock;

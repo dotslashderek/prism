@@ -4,7 +4,8 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "paths": {
-      "@stoplight/prism-core": ["./core/src"]
+      "@stoplight/prism-core": ["./core/src"],
+      "@stoplight/prism-ai-mocker": ["./ai-mocker/src"]
     }
   }
 }

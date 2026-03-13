@@ -86,12 +86,12 @@ export function factory<Resource, Input, Output, Config extends IPrismConfig>(
           TE.orElse(error => {
             if (error.name === 'https://stoplight.io/prism/errors#UPSTREAM_NOT_IMPLEMENTED') {
               components.logger.info('Remocking the call');
-              return TE.fromIOEither(mockCall);
+              return mockCall();
             }
             return TE.left(error);
           })
         )
-      : TE.fromIOEither(mockCall);
+      : mockCall();
 
     return pipe(
       produceOutput,
