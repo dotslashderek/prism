@@ -167,7 +167,7 @@ type CreateBaseServerOptions = {
   verboseLevel: string;
   ignoreExamples: boolean;
   seed: string;
-  ai: boolean;
+  ai?: boolean;
   jsonSchemaFakerFillProperties: boolean;
 };
 
