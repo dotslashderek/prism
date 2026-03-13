@@ -131,7 +131,7 @@ export const orchestrate = async (
           resourceId: context.resourceId,
         },
         { store, embedder, summarizer },
-        logger,
+        logger as any,
       ).catch(err => logger.error({ err }, 'Memory agent failed'));
 
       return body;
@@ -146,8 +146,9 @@ export const orchestrate = async (
   } catch (err) {
     if (err instanceof TimeoutError) {
       logger.warn({ label: err.label, message: err.message }, 'Pipeline timeout — falling back to faker');
-      return fakerFallback(schema);
+    } else {
+      logger.error({ err }, 'Pipeline failed — falling back to faker');
     }
-    throw err;
+    return fakerFallback(schema);
   }
 };
