@@ -94,6 +94,31 @@ export const buildSystemPrompt = (input: GeneratorAgentInput): string => {
  * 2. Ajv validates the output against the original JSON Schema
  * 3. On failure, returns a fallback marker for the orchestrator to handle
  */
+/**
+ * Clean schema for strict LLM consumption (removes OpenAPI-specific properties).
+ */
+const cleanForLlm = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(cleanForLlm);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (key !== 'xml' && key !== 'example' && key !== 'examples' && key !== 'additionalProperties') {
+        cleaned[key] = cleanForLlm(value);
+      }
+    }
+    
+    // OpenAI Strict Mode requires 'properties' on objects, even if empty
+    if (cleaned.type === 'object' && typeof cleaned.properties !== 'object') {
+      cleaned.properties = {};
+    }
+    
+    return cleaned;
+  }
+  return obj;
+};
+
 export const generatorAgent = async (
   input: GeneratorAgentInput,
   chatModel: BaseChatModel,
@@ -101,8 +126,9 @@ export const generatorAgent = async (
 ): Promise<GeneratorAgentOutput> => {
   try {
     const prompt = buildSystemPrompt(input);
+    const safeSchema = cleanForLlm(input.schema);
 
-    const structured = chatModel.withStructuredOutput(input.schema, { name: 'generate_mock_data' });
+    const structured = chatModel.withStructuredOutput(safeSchema, { name: 'generate_mock_data' });
     const body = await structured.invoke(prompt);
 
     const { valid, errors } = validateWithAjv(body, input.schema);
@@ -114,7 +140,7 @@ export const generatorAgent = async (
 
     return { body, compliant: valid, source: 'llm' };
   } catch (err) {
-    logger.error({ step: 'llm_error', err: String(err) }, 'LLM generation threw an error');
+    logger.error({ step: 'llm_error', err: String(err) }, `LLM generation threw an error: ${String(err)}`);
     return { body: undefined, compliant: false, source: 'fallback' };
   }
 };

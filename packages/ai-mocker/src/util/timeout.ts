@@ -33,10 +33,10 @@ export const withTimeout = <T>(promise: Promise<T>, ms: number, label?: string):
   });
 
 /** Timeout budget for embedding calls (ms). */
-export const EMBEDDING_TIMEOUT_MS = 500;
+export const EMBEDDING_TIMEOUT_MS = 3000;
 
 /** Timeout budget for LLM generation calls (ms). */
-export const LLM_TIMEOUT_MS = 1500;
+export const LLM_TIMEOUT_MS = 15000;
 
 /** Timeout budget for the full orchestrator pipeline (ms). */
-export const PIPELINE_TIMEOUT_MS = 2000;
+export const PIPELINE_TIMEOUT_MS = 20000;
