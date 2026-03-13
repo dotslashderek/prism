@@ -60,3 +60,14 @@ export type GeneratorAgentOutput = {
   readonly source: 'llm' | 'fallback';
 };
 
+/** Input to the memory agent — everything needed to persist an interaction. */
+export type MemoryAgentInput = {
+  readonly operation: string;
+  readonly request: HttpRequest;
+  readonly response: unknown;
+  readonly method: string;
+  readonly path: string;
+  readonly resourceKey: string;
+  readonly resourceId?: string;
+};
+
