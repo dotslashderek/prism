@@ -95,16 +95,18 @@ describe('generatorAgent', () => {
   // ----------------------------------------------------------------
   // Timeout handling
   // ----------------------------------------------------------------
-  describe('timeout handling', () => {
-    it('returns fallback when LLM exceeds timeout', async () => {
-      const chatModel = mockSlowChatModel();
+  describe('slow model handling (timeout delegated to orchestrator)', () => {
+    it('returns LLM result even for slow models (orchestrator handles timeout)', async () => {
+      // The generator agent no longer has its own timeout — the orchestrator
+      // wraps the full pipeline in withTimeout(). So a slow model that eventually
+      // resolves should produce an LLM-sourced result at the generator level.
+      const chatModel = mockChatModel({ id: 1, name: 'SlowButValid' });
 
       const result = await generatorAgent(makeInput(), chatModel);
 
-      expect(result.body).toBeUndefined();
-      expect(result.compliant).toBe(false);
-      expect(result.source).toBe('fallback');
-    }, 10_000);
+      expect(result.body).toEqual({ id: 1, name: 'SlowButValid' });
+      expect(result.source).toBe('llm');
+    });
   });
 
   // ----------------------------------------------------------------

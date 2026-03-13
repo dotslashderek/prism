@@ -28,7 +28,7 @@ const getOrInitStore = (): MemoryStore => {
   if (singletonStore === null) {
     singletonStore = new MemoryStore({
       dbPath: process.env.PRISM_AI_DB_PATH ?? '.prism-memory.db',
-      disableVec: true,
+      disableVec: process.env.PRISM_AI_DISABLE_VEC === 'true',
     });
   }
   return singletonStore;
