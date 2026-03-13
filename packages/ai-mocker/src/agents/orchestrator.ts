@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { JSONSchema7 } from 'json-schema';
 import type { Logger } from 'pino';
@@ -8,6 +9,10 @@ import type { HttpRequest, Intent } from './types';
 import { contextAgent } from './context-agent';
 import { generatorAgent } from './generator-agent';
 import { memoryAgent } from './memory-agent';
+import type { ResourceMutex } from '../util/concurrency';
+import type { ResponseCache } from '../util/cache';
+import { buildKey } from '../util/cache';
+import { withTimeout, TimeoutError, EMBEDDING_TIMEOUT_MS, LLM_TIMEOUT_MS, PIPELINE_TIMEOUT_MS } from '../util/timeout';
 
 /** Dependencies injected into the orchestrator. */
 export type OrchestratorDeps = {
@@ -17,6 +22,9 @@ export type OrchestratorDeps = {
   readonly chatModel: BaseChatModel;
   readonly fakerFallback: (schema: JSONSchema7) => unknown;
   readonly logger: Logger;
+  readonly resourceMutex: ResourceMutex;
+  readonly responseCache: ResponseCache;
+  readonly llmLimiter: <T>(fn: () => Promise<T>) => Promise<T>;
 };
 
 /** Classify intent from the HTTP method. */
@@ -31,15 +39,19 @@ const classifyIntent = (method: string): Intent => {
   }
 };
 
+/** Hash a JSON schema for deterministic cache key generation. */
+const hashSchema = (schema: JSONSchema7): string =>
+  createHash('sha256').update(JSON.stringify(schema)).digest('hex').slice(0, 12);
+
 /**
  * Orchestrate the full AI mock pipeline: context → generate → memory.
  *
- * 1. Classify the request intent from the HTTP method
- * 2. Retrieve context (past interactions, entity state) via the context agent
- * 3. Generate a response via the generator agent
- * 4. Fall back to faker if the generator fails or produces non-compliant output
- * 5. Fire-and-forget the memory agent to persist the interaction
- * 6. Return the generated body
+ * Production-hardened with:
+ * - **Cache**: repeated identical GETs return cached responses
+ * - **Mutex**: concurrent mutations to the same resource are serialized
+ * - **Timeouts**: embedding, LLM, and full pipeline each have budgets
+ * - **Concurrency**: LLM calls are capped via pLimit
+ * - On any timeout, falls back to faker
  */
 export const orchestrate = async (
   operation: string,
@@ -47,44 +59,95 @@ export const orchestrate = async (
   schema: JSONSchema7,
   deps: OrchestratorDeps,
 ): Promise<unknown> => {
-  const { store, embedder, summarizer, chatModel, fakerFallback, logger } = deps;
+  const {
+    store, embedder, summarizer, chatModel,
+    fakerFallback, logger,
+    resourceMutex, responseCache, llmLimiter,
+  } = deps;
 
-  // 1. Classify intent
-  const intent = classifyIntent(request.method);
+  const schemaHash = hashSchema(schema);
 
-  // 2. Context retrieval
-  const context = await contextAgent(
-    { operation, request },
-    { store, embedder, summarizer },
-  );
+  const pipeline = async (): Promise<unknown> => {
+    // 1. Classify intent
+    const intent = classifyIntent(request.method);
 
-  // 3. Generate response
-  const generated = await generatorAgent(
-    { schema, request, context, intent },
-    chatModel,
-  );
+    // 2. Context retrieval (with embedding timeout)
+    const originalEmbed = embedder.embed.bind(embedder);
+    const timedEmbedder = {
+      ...embedder,
+      embed: (text: string) => withTimeout(originalEmbed(text), EMBEDDING_TIMEOUT_MS, 'embedding'),
+    };
 
-  // 4. Determine final body — fall back to faker if needed
-  const body =
-    generated.source === 'fallback' || !generated.compliant
-      ? fakerFallback(schema)
-      : generated.body;
+    const context = await contextAgent(
+      { operation, request },
+      { store, embedder: timedEmbedder as Embedder, summarizer },
+    );
 
-  // 5. Fire-and-forget memory persistence
-  memoryAgent(
-    {
-      operation,
-      request,
-      response: body,
-      method: request.method,
-      path: request.path,
-      resourceKey: context.resourceKey,
-      resourceId: context.resourceId,
-    },
-    { store, embedder, summarizer },
-    logger,
-  ).catch(err => logger.error({ err }, 'Memory agent failed'));
+    // Check cache (after context, so we have memory IDs for the key)
+    const memoryIds = context.memories.map(m => m.timestamp);
+    const cacheKey = buildKey(operation, memoryIds, schemaHash);
 
-  // 6. Return
-  return body;
+    const cached = responseCache.get(cacheKey);
+    if (cached !== undefined) {
+      logger.info({ cacheKey }, 'Cache hit — returning cached response');
+      return cached;
+    }
+
+    // 3. Acquire mutex for mutations/deletions
+    const needsLock = intent === 'mutation' || intent === 'deletion';
+    const release = needsLock ? await resourceMutex.acquire(context.resourceKey) : undefined;
+
+    try {
+      // 4. Generate response (with LLM concurrency + timeout)
+      const generated = await llmLimiter(() =>
+        withTimeout(
+          generatorAgent({ schema, request, context, intent }, chatModel),
+          LLM_TIMEOUT_MS,
+          'llm',
+        ),
+      );
+
+      // 5. Determine final body — fall back to faker if needed
+      const body =
+        generated.source === 'fallback' || !generated.compliant
+          ? fakerFallback(schema)
+          : generated.body;
+
+      // 6. Invalidate cache on mutations, populate on success
+      if (needsLock) {
+        responseCache.invalidate(context.resourceKey);
+      }
+      responseCache.set(cacheKey, body);
+
+      // 7. Fire-and-forget memory persistence
+      memoryAgent(
+        {
+          operation,
+          request,
+          response: body,
+          method: request.method,
+          path: request.path,
+          resourceKey: context.resourceKey,
+          resourceId: context.resourceId,
+        },
+        { store, embedder, summarizer },
+        logger,
+      ).catch(err => logger.error({ err }, 'Memory agent failed'));
+
+      return body;
+    } finally {
+      release?.();
+    }
+  };
+
+  // Wrap full pipeline in timeout — fall back to faker on timeout
+  try {
+    return await withTimeout(pipeline(), PIPELINE_TIMEOUT_MS, 'pipeline');
+  } catch (err) {
+    if (err instanceof TimeoutError) {
+      logger.warn({ label: err.label, message: err.message }, 'Pipeline timeout — falling back to faker');
+      return fakerFallback(schema);
+    }
+    throw err;
+  }
 };
