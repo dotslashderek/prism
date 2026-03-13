@@ -20,10 +20,10 @@ export const buildKey = (operationId: string, memoryIds: readonly number[], sche
  * identical request contexts within the TTL window.
  */
 export class ResponseCache {
-  private readonly cache: LRUCache<string, unknown>;
+  private readonly cache: LRUCache<string, any>;
 
   constructor(ttlMs = DEFAULT_TTL_MS, max = DEFAULT_MAX) {
-    this.cache = new LRUCache<string, unknown>({ max, ttl: ttlMs });
+    this.cache = new LRUCache<string, any>({ max, ttl: ttlMs });
   }
 
   /** Retrieve a cached response body, or undefined on miss. */

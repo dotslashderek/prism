@@ -22,6 +22,9 @@
   "references": [
     {
       "path": "../core/tsconfig.build.json"
+    },
+    {
+      "path": "../ai-mocker/tsconfig.build.json"
     }
   ]
 }

@@ -30,7 +30,9 @@ echo "✅ Spec ready: $SPEC_FILE"
 
 # ── 2. Start Prism ──────────────────────────────────────────
 echo "🚀 Starting Prism mock server..."
-npx prism mock "$SPEC_FILE" --ai --port 4010 &
+npx --no-install prism mock "$SPEC_FILE" --ai --port 4010 &
+# If npx fails to find the local bin, fallback to explicit path:
+node ../../cli/dist/index.js mock "$SPEC_FILE" --ai --port 4010 &
 PRISM_PID=$!
 echo "   PID: $PRISM_PID"
 
@@ -57,10 +59,10 @@ timed_curl() {
   echo "📡 $label"
   echo "────────────────────────────────────────"
   local start end elapsed
-  start=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+  start=$(node -e 'console.log(Date.now())')
   local response
-  response=$(curl -s -w "\n%{http_code}" "$@")
-  end=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+  response=$(curl -s -H "api_key: special-key" -w "\n%{http_code}" "$@")
+  end=$(node -e 'console.log(Date.now())')
   elapsed=$((end - start))
 
   local http_code body

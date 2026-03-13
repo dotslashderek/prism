@@ -9,10 +9,7 @@ import type { JSONSchema7 } from 'json-schema';
  * layer downstream will catch compliance issues.
  */
 export const convertJsonSchemaToZod = (schema: JSONSchema7): z.ZodType => {
-  try {
-    return z.fromJSONSchema(schema as Parameters<typeof z.fromJSONSchema>[0]);
-  } catch {
-    console.warn('[ai-mocker] Unsupported JSON Schema — falling back to z.any()');
-    return z.any();
-  }
+  // Zod v3 lacks z.fromJSONSchema(). We return z.any() to bypass early schema
+  // compilation and rely entirely on the subsequent Ajv validation pass for compliance.
+  return z.any();
 };
