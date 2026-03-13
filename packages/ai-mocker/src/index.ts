@@ -169,12 +169,15 @@ export const createAiPayloadGenerator = (
   logger: Logger,
   specSchema?: JSONSchema7,
 ): AsyncPayloadGenerator => {
-  const store = getOrInitStore();
-  const embedder = getOrInitEmbedder();
-
-  // Pre-warm memory from spec examples (fire-and-forget)
+  // Try to safely kick off pre-warming in the background, but do not crash if API key is missing
   if (specSchema) {
-    preWarmMemory(specSchema, store, embedder, logger).catch(() => {});
+    try {
+      const store = getOrInitStore();
+      const embedder = getOrInitEmbedder();
+      preWarmMemory(specSchema, store, embedder, logger).catch(() => {});
+    } catch (e) {
+      logger.warn({ step: 'prewarm_error' }, 'Failed to start AI pre-warming (missing keys?)');
+    }
   }
 
   return (schema: JSONSchema7): TaskEither<Error, unknown> => {
@@ -194,18 +197,33 @@ export const createAiPayloadGenerator = (
     };
 
     return TE.tryCatch(
-      () =>
-        orchestrate(operation, request, schema, {
+      () => {
+        logger.info({ step: 'tryCatch' }, 'About to start orchestration block');
+        let chatModel, store, embedder;
+        try {
+          chatModel = getOrInitChatModel();
+          store = getOrInitStore();
+          embedder = getOrInitEmbedder();
+        } catch (initErr) {
+          logger.error({ step: 'init', err: String(initErr) }, 'Chat Model or Embedder Init Errored');
+          return Promise.resolve(fakerFallback(schema));
+        }
+
+        return orchestrate(operation, request, schema, {
           store,
           embedder,
           summarizer: summarize,
-          chatModel: getOrInitChatModel(),
+          chatModel,
           fakerFallback,
           logger,
           resourceMutex: getOrInitMutex(),
           responseCache: getOrInitCache(),
           llmLimiter: getOrInitLimiter(),
-        }),
+        }).catch(err => {
+          logger.error({ step: 'orchestrate', err: String(err) }, 'Orchestrate promise rejected');
+          return fakerFallback(schema);
+        });
+      },
       (err): Error => (err instanceof Error ? err : new Error(String(err))),
     );
   };

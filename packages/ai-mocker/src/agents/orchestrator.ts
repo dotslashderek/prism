@@ -65,6 +65,8 @@ export const orchestrate = async (
     resourceMutex, responseCache, llmLimiter,
   } = deps;
 
+  logger.info({ step: 'orchestrator_start', operation }, 'Orchestrator started');
+
   const schemaHash = hashSchema(schema);
 
   const pipeline = async (): Promise<unknown> => {
@@ -101,7 +103,7 @@ export const orchestrate = async (
       // 4. Generate response (with LLM concurrency + timeout)
       const generated = await llmLimiter(() =>
         withTimeout(
-          generatorAgent({ schema, request, context, intent }, chatModel),
+          generatorAgent({ schema, request, context, intent }, chatModel, logger),
           LLM_TIMEOUT_MS,
           'llm',
         ),
@@ -145,9 +147,9 @@ export const orchestrate = async (
     return await withTimeout(pipeline(), PIPELINE_TIMEOUT_MS, 'pipeline');
   } catch (err) {
     if (err instanceof TimeoutError) {
-      logger.warn({ label: err.label, message: err.message }, 'Pipeline timeout — falling back to faker');
+      logger.warn('[AI Mocker] Pipeline timeout — falling back to faker: ' + err.message);
     } else {
-      logger.error({ err }, 'Pipeline failed — falling back to faker');
+      logger.error('[AI Mocker] Pipeline failed — falling back to faker: ' + (err instanceof Error ? err.message : String(err)));
     }
     return fakerFallback(schema);
   }
