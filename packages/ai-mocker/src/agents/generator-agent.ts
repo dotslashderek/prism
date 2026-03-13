@@ -4,8 +4,6 @@ import type { GeneratorAgentInput, GeneratorAgentOutput, Memory } from './types'
 import { convertJsonSchemaToZod } from '../schema/json-schema-to-zod';
 import { validateWithAjv } from '../schema/compliance';
 
-const LLM_TIMEOUT_MS = 2_000;
-
 /** Intent-specific generation guidance. */
 const INTENT_GUIDANCE: Record<string, string> = {
   read: 'Return existing data consistent with prior interactions.',
@@ -83,9 +81,7 @@ export const buildSystemPrompt = (input: GeneratorAgentInput): string => {
   return sections.join('\n');
 };
 
-/** Promise that rejects after `ms` milliseconds. */
-const timeout = (ms: number): Promise<never> =>
-  new Promise((_, reject) => setTimeout(() => reject(new Error('LLM timeout')), ms));
+
 
 /**
  * Generator Agent — uses LLM to generate schema-compliant, context-aware API responses.
@@ -104,7 +100,7 @@ export const generatorAgent = async (
     const prompt = buildSystemPrompt(input);
 
     const structured = chatModel.withStructuredOutput(zodSchema);
-    const body = await Promise.race([structured.invoke(prompt), timeout(LLM_TIMEOUT_MS)]);
+    const body = await structured.invoke(prompt);
 
     const { valid } = validateWithAjv(body, input.schema);
 

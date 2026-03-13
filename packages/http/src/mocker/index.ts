@@ -68,14 +68,12 @@ const mock: IPrismComponents<IHttpOperation, IHttpRequest, IHttpResponse, IHttpM
   }
 
   const syncGenerator = createSyncPayloadGenerator(config, resource);
-  const payloadGenerator: PayloadGenerator = config.ai
-    ? createAiPayloadGenerator(syncGenerator, (null as unknown as Logger)) // logger injected below in pipeline
-    : (source: JSONSchema) => TE.fromEither(syncGenerator(source));
+  const syncPayloadGenerator: PayloadGenerator = (source: JSONSchema) => TE.fromEither(syncGenerator(source));
 
   return logger => {
     const aiPayloadGenerator: PayloadGenerator = config.ai
       ? createAiPayloadGenerator(syncGenerator, logger)
-      : payloadGenerator;
+      : syncPayloadGenerator;
 
     logRequest({ logger, prefix: `${chalk.grey('< ')}`, ...pick(input.data, 'body', 'headers') });
 
