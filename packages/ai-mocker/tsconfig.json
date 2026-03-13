@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@stoplight/prism-core": ["./core/src"],
+      "@stoplight/prism-http": ["./http/src"]
+    }
+  }
+}
