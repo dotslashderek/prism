@@ -22,6 +22,8 @@ const mockGeneratorAgent = generatorAgent as jest.MockedFunction<typeof generato
 const mockMemoryAgent = memoryAgent as jest.MockedFunction<typeof memoryAgent>;
 
 describe('orchestrate', () => {
+  /** Flush microtask queue so fire-and-forget promises settle. */
+  const drain = () => new Promise<void>(r => setImmediate(r));
   const schema: JSONSchema7 = {
     type: 'object',
     properties: { id: { type: 'number' }, name: { type: 'string' } },
@@ -58,6 +60,11 @@ describe('orchestrate', () => {
       source: 'llm',
     });
     mockMemoryAgent.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    await drain();
+    jest.clearAllTimers();
   });
 
   const makeRequest = (method: string, path: string, body?: unknown): HttpRequest => ({
@@ -140,10 +147,12 @@ describe('orchestrate', () => {
       const deps = makeDeps();
 
       await orchestrate(`${method} /users`, makeRequest(method, '/users'), schema, deps);
+      await drain();
 
       expect(mockGeneratorAgent).toHaveBeenCalledWith(
         expect.objectContaining({ intent: expectedIntent }),
         deps.chatModel,
+        deps.logger,
       );
     });
   });
@@ -153,6 +162,7 @@ describe('orchestrate', () => {
     const request = makeRequest('GET', '/users');
 
     await orchestrate('GET /users', request, schema, deps);
+    await drain();
 
     expect(mockGeneratorAgent).toHaveBeenCalledWith(
       {
@@ -162,6 +172,7 @@ describe('orchestrate', () => {
         intent: 'read',
       },
       deps.chatModel,
+      deps.logger,
     );
   });
 
@@ -260,16 +271,22 @@ describe('orchestrate', () => {
   });
 
   it('falls back to faker on pipeline timeout', async () => {
-    const deps = makeDeps();
-    // Make context agent hang to trigger pipeline timeout
-    mockContextAgent.mockImplementation(() => new Promise(() => {}));
+    jest.useFakeTimers();
+    try {
+      const deps = makeDeps();
+      // Make context agent hang to trigger pipeline timeout
+      mockContextAgent.mockImplementation(() => new Promise(() => {}));
 
-    const result = await orchestrate('GET /users', makeRequest('GET', '/users'), schema, deps);
+      const resultPromise = orchestrate('GET /users', makeRequest('GET', '/users'), schema, deps);
+      jest.advanceTimersByTime(20_001); // Exceed PIPELINE_TIMEOUT_MS
+      const result = await resultPromise;
 
-    expect(result).toEqual({ id: 99, name: 'faker-fallback' });
-    expect((deps.logger.warn as jest.Mock)).toHaveBeenCalledWith(
-      expect.objectContaining({ label: 'pipeline' }),
-      expect.stringContaining('timeout'),
-    );
+      expect(result).toEqual({ id: 99, name: 'faker-fallback' });
+      expect((deps.logger.warn as jest.Mock)).toHaveBeenCalledWith(
+        expect.stringContaining('Pipeline timeout'),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
