@@ -7,7 +7,10 @@ import { validateWithAjv } from '../schema/compliance';
 /** Intent-specific generation guidance. */
 const INTENT_GUIDANCE: Record<string, string> = {
   read: 'Return existing data consistent with prior interactions.',
-  mutation: 'Return the updated resource reflecting the request body changes.',
+  mutation:
+    'For POST/PUT requests, the response MUST include all fields from the request body ' +
+    'with their exact submitted values. Add server-generated fields (id, timestamps) ' +
+    'but do NOT alter client-submitted values.',
   deletion: 'Return a confirmation or empty response.',
 };
 
@@ -83,7 +86,59 @@ export const buildSystemPrompt = (input: GeneratorAgentInput): string => {
   return sections.join('\n');
 };
 
+/**
+ * Schema-aware overlay: shallow-merges request body fields onto LLM output.
+ *
+ * Only overlays fields that:
+ * - exist in `schema.properties`
+ * - are NOT marked `readOnly: true`
+ *
+ * Returns `llmOutput` unchanged when requestBody is null, undefined, array, or primitive.
+ */
+export const overlayRequestFields = (
+  llmOutput: unknown,
+  requestBody: unknown,
+  schema: JSONSchema7,
+): unknown => {
+  // Guard: requestBody must be a non-null, non-array plain object
+  if (
+    requestBody === null ||
+    requestBody === undefined ||
+    typeof requestBody !== 'object' ||
+    Array.isArray(requestBody)
+  ) {
+    return llmOutput;
+  }
 
+  // Guard: llmOutput must also be a non-null, non-array plain object
+  if (
+    llmOutput === null ||
+    llmOutput === undefined ||
+    typeof llmOutput !== 'object' ||
+    Array.isArray(llmOutput)
+  ) {
+    return llmOutput;
+  }
+
+  const properties = schema.properties;
+  if (!properties) return llmOutput;
+
+  const reqObj = requestBody as Record<string, unknown>;
+  const llmObj = llmOutput as Record<string, unknown>;
+  const merged = { ...llmObj };
+
+  for (const [key, value] of Object.entries(reqObj)) {
+    const propDef = properties[key];
+    // Skip fields not in schema
+    if (!propDef || typeof propDef === 'boolean') continue;
+    // Skip readOnly fields
+    if ((propDef as JSONSchema7 & { readOnly?: boolean }).readOnly) continue;
+
+    merged[key] = value;
+  }
+
+  return merged;
+};
 
 /**
  * Generator Agent — uses LLM to generate schema-compliant, context-aware API responses.
@@ -133,11 +188,40 @@ export const generatorAgent = async (
     const { valid, errors } = validateWithAjv(body, input.schema);
     if (!valid) {
       logger.warn({ step: 'ajv_validation', body, errors }, 'Ajv validation failed for LLM output');
-    } else {
-      logger.info({ step: 'llm_success' }, 'LLM generation successful and valid');
+
+      // For mutations, try overlay repair — request fields may fix missing required props
+      if (input.intent === 'mutation') {
+        const repaired = overlayRequestFields(body, input.request.body, input.schema);
+        const repairResult = validateWithAjv(repaired, input.schema);
+        if (repairResult.valid) {
+          logger.info({ step: 'overlay_repair' }, 'Overlay repaired non-compliant mutation output');
+          return { body: repaired, compliant: true, source: 'llm' };
+        }
+      }
+
+      return { body, compliant: false, source: 'llm' };
     }
 
-    return { body, compliant: valid, source: 'llm' };
+    logger.info({ step: 'llm_success' }, 'LLM generation successful and valid');
+
+    // Post-LLM overlay: echo request body fields into mutation responses
+    if (input.intent === 'mutation') {
+      const merged = overlayRequestFields(body, input.request.body, input.schema);
+      if (merged !== body) {
+        const overlayResult = validateWithAjv(merged, input.schema);
+        if (overlayResult.valid) {
+          logger.info({ step: 'overlay_applied' }, 'Mutation overlay applied and valid');
+          return { body: merged, compliant: true, source: 'llm' };
+        }
+        // Overlay broke validation — fall back to pristine LLM output
+        logger.warn(
+          { step: 'overlay_fallback', errors: overlayResult.errors },
+          'Overlay broke Ajv validation, returning pure LLM output',
+        );
+      }
+    }
+
+    return { body, compliant: true, source: 'llm' };
   } catch (err) {
     logger.error({ step: 'llm_error', err: String(err) }, `LLM generation threw an error: ${String(err)}`);
     return { body: undefined, compliant: false, source: 'fallback' };

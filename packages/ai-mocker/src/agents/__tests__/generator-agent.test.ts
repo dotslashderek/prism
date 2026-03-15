@@ -1,7 +1,7 @@
 import type { JSONSchema7 } from 'json-schema';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { GeneratorAgentInput, ContextAgentOutput } from '../types';
-import { generatorAgent, buildSystemPrompt } from '../generator-agent';
+import { generatorAgent, buildSystemPrompt, overlayRequestFields } from '../generator-agent';
 import type { Logger } from 'pino';
 
 /** Minimal mock logger for tests. */
@@ -39,16 +39,6 @@ const mockChatModel = (response: unknown): BaseChatModel => {
   return { withStructuredOutput } as unknown as BaseChatModel;
 };
 
-/** Create a mock BaseChatModel that times out. */
-const mockSlowChatModel = (): BaseChatModel => {
-  const invoke = jest.fn().mockReturnValue(
-    new Promise(resolve => setTimeout(() => resolve({ id: 1, name: 'Late' }), 5_000)),
-  );
-  const withStructuredOutput = jest.fn().mockReturnValue({ invoke });
-
-  return { withStructuredOutput } as unknown as BaseChatModel;
-};
-
 /** Create a mock BaseChatModel that throws. */
 const mockFailingChatModel = (): BaseChatModel => {
   const invoke = jest.fn().mockRejectedValue(new Error('LLM exploded'));
@@ -79,7 +69,6 @@ describe('generatorAgent', () => {
       await generatorAgent(makeInput(), chatModel, mockLogger);
 
       expect(chatModel.withStructuredOutput).toHaveBeenCalledTimes(1);
-      // First arg should be a plain JSON Schema object (cleaned for LLM consumption)
       const schema = (chatModel.withStructuredOutput as jest.Mock).mock.calls[0][0];
       expect(schema).toBeDefined();
       expect(schema.type).toBe('object');
@@ -87,7 +76,6 @@ describe('generatorAgent', () => {
     });
 
     it('marks non-compliant LLM output as compliant: false', async () => {
-      // LLM returns data missing required field 'name'
       const chatModel = mockChatModel({ id: 1 });
 
       const result = await generatorAgent(makeInput(), chatModel, mockLogger);
@@ -102,9 +90,6 @@ describe('generatorAgent', () => {
   // ----------------------------------------------------------------
   describe('slow model handling (timeout delegated to orchestrator)', () => {
     it('returns LLM result even for slow models (orchestrator handles timeout)', async () => {
-      // The generator agent no longer has its own timeout — the orchestrator
-      // wraps the full pipeline in withTimeout(). So a slow model that eventually
-      // resolves should produce an LLM-sourced result at the generator level.
       const chatModel = mockChatModel({ id: 1, name: 'SlowButValid' });
 
       const result = await generatorAgent(makeInput(), chatModel, mockLogger);
@@ -176,7 +161,7 @@ describe('generatorAgent', () => {
 
     it('includes intent-specific guidance for mutation', () => {
       const prompt = buildSystemPrompt(makeInput({ intent: 'mutation' }));
-      expect(prompt).toContain('Return the updated resource reflecting the request body changes');
+      expect(prompt).toContain('response MUST include all fields from the request body');
     });
 
     it('includes intent-specific guidance for deletion', () => {
@@ -212,6 +197,249 @@ describe('generatorAgent', () => {
 
       const prompt = buildSystemPrompt(input);
       expect(prompt).toContain('status: one of [active, inactive]');
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Mutation response overlay
+  // ----------------------------------------------------------------
+  describe('mutation response overlay', () => {
+    const mutationSchema: JSONSchema7 = {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', readOnly: true } as JSONSchema7 & { readOnly: boolean },
+        name: { type: 'string' },
+        email: { type: 'string' },
+        createdAt: { type: 'string', readOnly: true } as JSONSchema7 & { readOnly: boolean },
+      },
+      required: ['id', 'name'],
+    };
+
+    it('echoes request body fields into mutation response', async () => {
+      const llmResponse = { id: 42, name: 'LLM-Generated', email: 'llm@example.com' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'POST', path: '/users', body: { name: 'Buddy', email: 'buddy@test.com' } },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      expect(result.body).toEqual({ id: 42, name: 'Buddy', email: 'buddy@test.com' });
+      expect(result.compliant).toBe(true);
+      expect(result.source).toBe('llm');
+    });
+
+    it('preserves server-generated fields not in request body', async () => {
+      const llmResponse = { id: 99, name: 'Whatever', createdAt: '2026-01-01T00:00:00Z' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'POST', path: '/users', body: { name: 'Buddy' } },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      expect((result.body as Record<string, unknown>).id).toBe(99);
+      expect((result.body as Record<string, unknown>).createdAt).toBe('2026-01-01T00:00:00Z');
+      expect((result.body as Record<string, unknown>).name).toBe('Buddy');
+    });
+
+    it('does NOT overlay readOnly fields from request body', async () => {
+      const llmResponse = { id: 42, name: 'LLM-Name' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'PUT', path: '/users/42', body: { id: 99, name: 'Updated' } },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      expect((result.body as Record<string, unknown>).id).toBe(42);
+      expect((result.body as Record<string, unknown>).name).toBe('Updated');
+    });
+
+    it('falls back to pure LLM output when overlay breaks Ajv validation', async () => {
+      const strictSchema: JSONSchema7 = {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          name: { type: 'string', minLength: 5 },
+        },
+        required: ['id', 'name'],
+      };
+
+      const llmResponse = { id: 1, name: 'ValidLongName' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: strictSchema,
+          request: { method: 'POST', path: '/users', body: { name: 'Bo' } },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      expect(result.body).toEqual(llmResponse);
+      expect(result.compliant).toBe(true);
+      expect(result.source).toBe('llm');
+    });
+
+    it('does NOT apply overlay for read intent', async () => {
+      const llmResponse = { id: 1, name: 'Alice' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'GET', path: '/users/1', body: { name: 'Hacker' } },
+          intent: 'read',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      expect(result.body).toEqual(llmResponse);
+    });
+
+    it('skips overlay when request body is not an object', async () => {
+      const llmResponse = { id: 1, name: 'Alice' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result1 = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'POST', path: '/users', body: [{ name: 'Arr' }] },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+      expect(result1.body).toEqual(llmResponse);
+
+      const result2 = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'POST', path: '/users', body: 'just a string' },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+      expect(result2.body).toEqual(llmResponse);
+    });
+
+    it('skips overlay when request body is null or undefined', async () => {
+      const llmResponse = { id: 1, name: 'Alice' };
+      const chatModel = mockChatModel(llmResponse);
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'POST', path: '/users' },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      expect(result.body).toEqual(llmResponse);
+    });
+
+    it('repairs non-compliant mutation output via overlay when request has missing required fields', async () => {
+      // LLM returns { id: 1 } — missing required 'name'
+      const chatModel = mockChatModel({ id: 1 });
+
+      const result = await generatorAgent(
+        makeInput({
+          schema: mutationSchema,
+          request: { method: 'POST', path: '/users', body: { name: 'Buddy' } },
+          intent: 'mutation',
+        }),
+        chatModel,
+        mockLogger,
+      );
+
+      // Overlay should repair by adding 'name' from request body
+      expect((result.body as Record<string, unknown>).name).toBe('Buddy');
+      expect(result.compliant).toBe(true);
+      expect(result.source).toBe('llm');
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // overlayRequestFields (unit tests)
+  // ----------------------------------------------------------------
+  describe('overlayRequestFields', () => {
+    const schema: JSONSchema7 = {
+      type: 'object',
+      properties: {
+        id: { type: 'integer', readOnly: true } as JSONSchema7 & { readOnly: boolean },
+        name: { type: 'string' },
+        email: { type: 'string' },
+      },
+    };
+
+    it('overlays non-readOnly fields from request body', () => {
+      const result = overlayRequestFields(
+        { id: 1, name: 'LLM', email: 'llm@x.com' },
+        { name: 'Request', email: 'req@x.com' },
+        schema,
+      );
+      expect(result).toEqual({ id: 1, name: 'Request', email: 'req@x.com' });
+    });
+
+    it('skips readOnly fields', () => {
+      const result = overlayRequestFields({ id: 1, name: 'LLM' }, { id: 99, name: 'Req' }, schema);
+      expect(result).toEqual({ id: 1, name: 'Req' });
+    });
+
+    it('returns llmOutput unchanged for non-object requestBody', () => {
+      const llm = { id: 1, name: 'LLM' };
+      expect(overlayRequestFields(llm, null, schema)).toBe(llm);
+      expect(overlayRequestFields(llm, undefined, schema)).toBe(llm);
+      expect(overlayRequestFields(llm, [1, 2], schema)).toBe(llm);
+      expect(overlayRequestFields(llm, 'string', schema)).toBe(llm);
+      expect(overlayRequestFields(llm, 42, schema)).toBe(llm);
+    });
+
+    it('skips fields not in schema.properties', () => {
+      const result = overlayRequestFields(
+        { id: 1, name: 'LLM' },
+        { name: 'Req', unknownField: 'ignored' },
+        schema,
+      );
+      expect(result).toEqual({ id: 1, name: 'Req' });
+      expect((result as Record<string, unknown>).unknownField).toBeUndefined();
+    });
+
+    it('returns llmOutput unchanged when schema has no properties', () => {
+      const llm = { id: 1 };
+      const noPropsSchema: JSONSchema7 = { type: 'object' };
+      expect(overlayRequestFields(llm, { id: 2 }, noPropsSchema)).toBe(llm);
+    });
+
+    it('returns llmOutput unchanged when llmOutput is not an object', () => {
+      const reqBody = { name: 'Req' };
+      expect(overlayRequestFields('a string', reqBody, schema)).toBe('a string');
+      expect(overlayRequestFields(42, reqBody, schema)).toBe(42);
+      expect(overlayRequestFields(null, reqBody, schema)).toBe(null);
+      expect(overlayRequestFields(undefined, reqBody, schema)).toBe(undefined);
+      expect(overlayRequestFields([1, 2], reqBody, schema)).toEqual([1, 2]);
     });
   });
 });
