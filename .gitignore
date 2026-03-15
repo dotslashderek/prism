@@ -34,3 +34,4 @@ cli-binaries
 test-init.*
 test-te.*
 live-demo.log
+tmp/
