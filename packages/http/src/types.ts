@@ -92,7 +92,7 @@ export class ProblemJsonError extends Error {
 }
 
 export type ContentExample = INodeExample | INodeExternalExample;
-export type PayloadGenerator = (f: JSONSchema) => TaskEither<Error, unknown>;
+export type PayloadGenerator = (f: JSONSchema, request?: IHttpRequest) => TaskEither<Error, unknown>;
 
 export type PickRequired<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
 export type JSONSchema = JSONSchema7;
