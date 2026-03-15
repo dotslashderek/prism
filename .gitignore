@@ -29,3 +29,8 @@ cli-binaries
 
 # macOS
 .DS_Store
+# AI Mocker scratch files
+.prism-memory.db*
+test-init.*
+test-te.*
+live-demo.log
