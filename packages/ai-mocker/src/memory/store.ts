@@ -1,5 +1,4 @@
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const Database = require('better-sqlite3');
+import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { Interaction, SearchResult, MemoryStoreOptions } from './types';
 
