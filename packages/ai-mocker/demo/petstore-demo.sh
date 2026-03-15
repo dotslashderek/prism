@@ -31,9 +31,13 @@ echo "✅ Spec ready: $SPEC_FILE"
 # ── 2. Start Prism ──────────────────────────────────────────
 echo "🚀 Starting Prism mock server..."
 npx --no-install prism mock "$SPEC_FILE" --ai --port 4010 &
-# If npx fails to find the local bin, fallback to explicit path:
-node ../../cli/dist/index.js mock "$SPEC_FILE" --ai --port 4010 &
 PRISM_PID=$!
+# If npx failed to find the local bin, kill and fallback to explicit path:
+sleep 1
+if ! kill -0 $PRISM_PID 2>/dev/null; then
+  node ../../cli/dist/index.js mock "$SPEC_FILE" --ai --port 4010 &
+  PRISM_PID=$!
+fi
 echo "   PID: $PRISM_PID"
 
 # ── 3. Wait for ready ──────────────────────────────────────

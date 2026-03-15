@@ -2,7 +2,6 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import type { JSONSchema7, JSONSchema7Definition } from 'json-schema';
 import type { Logger } from 'pino';
 import type { GeneratorAgentInput, GeneratorAgentOutput, Memory } from './types';
-import { convertJsonSchemaToZod } from '../schema/json-schema-to-zod';
 import { validateWithAjv } from '../schema/compliance';
 
 /** Intent-specific generation guidance. */

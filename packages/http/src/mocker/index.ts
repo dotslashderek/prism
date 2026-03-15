@@ -19,7 +19,6 @@ import * as R from 'fp-ts/Reader';
 import * as O from 'fp-ts/Option';
 import * as RE from 'fp-ts/ReaderEither';
 import * as TE from 'fp-ts/TaskEither';
-import * as RTE from 'fp-ts/ReaderTaskEither';
 import { get, groupBy, isNumber, isString, keyBy, mapValues, pick } from 'lodash';
 import { Logger } from 'pino';
 import { is } from 'type-is';

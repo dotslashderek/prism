@@ -4,12 +4,8 @@ set -euo pipefail
 SPEC_FILE="packages/http-server/src/__tests__/fixtures/petstore.no-auth.oas3.yaml"
 BASE_URL="http://127.0.0.1:4020"
 
-export QUARKUS_REST_CLIENT_OPENAI_API_URL="https://saturn-poc1.openai.azure.com/openai/deployments/gpt-5-nano/chat/completions?api-version=2025-01-01-preview"
-export EMBEDDING_API_URL="https://saturn-poc1.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2023-05-15"
-export OPENAI_API_URL="https://saturn-poc1.openai.azure.com/openai/deployments/gpt-5-nano/chat/completions?api-version=2025-01-01-preview"
-
-echo "DEBUG: OPENAI_API_KEY=${OPENAI_API_KEY:-MISSING}"
-echo "DEBUG: EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-MISSING}"
+echo "DEBUG: OPENAI_API_KEY length=${#OPENAI_API_KEY} (${OPENAI_API_KEY:+set}${OPENAI_API_KEY:-MISSING})"
+echo "DEBUG: EMBEDDING_API_KEY length=${#EMBEDDING_API_KEY} (${EMBEDDING_API_KEY:+set}${EMBEDDING_API_KEY:-MISSING})"
 
 echo "🚀 Starting Prism mock server on port 4020 with AI Mocker..."
 node packages/cli/dist/index.js mock "$SPEC_FILE" --ai --port 4020 > live-demo.log 2>&1 &
