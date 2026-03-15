@@ -45,9 +45,27 @@ const mockCommand: CommandModule = {
           boolean: true,
           default: false,
         },
+        'scenarios-context': {
+          description: 'Custom context for AI seed generation (e.g. "Swedish users").',
+          string: true,
+          default: undefined,
+        },
+        'no-seed': {
+          description: 'Skip AI scenario seeding on startup.',
+          boolean: true,
+          default: false,
+        },
+        'clear-memory': {
+          description: 'Wipe existing AI memory before seeding.',
+          boolean: true,
+          default: false,
+        },
       }),
   handler: async parsedArgs => {
     parsedArgs.jsonSchemaFakerFillProperties = parsedArgs['json-schema-faker-fillProperties'];
+    const scenariosContext = parsedArgs['scenarios-context'] as string | undefined;
+    const noSeed = parsedArgs['no-seed'] as boolean;
+    const clearMemory = parsedArgs['clear-memory'] as boolean;
     const { multiprocess, dynamic, port, host, cors, document, errors, verboseLevel, ignoreExamples, seed, ai, jsonSchemaFakerFillProperties } =
       parsedArgs as unknown as CreateMockServerOptions;
 
@@ -64,6 +82,9 @@ const mockCommand: CommandModule = {
       ignoreExamples,
       seed,
       ai,
+      scenariosContext,
+      noSeed,
+      clearMemory,
       jsonSchemaFakerFillProperties,
     };
 

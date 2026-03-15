@@ -200,6 +200,21 @@ export class MemoryStore {
     this.store(tombstone);
   }
 
+  /** Returns true if the store contains any interactions. */
+  hasInteractions(): boolean {
+    return this.db.prepare('SELECT 1 FROM interactions LIMIT 1').get() !== undefined;
+  }
+
+  /** Wipe all interactions (and vec entries if available). */
+  clearMemory(): void {
+    this.db.transaction(() => {
+      if (this.vecAvailable) {
+        this.db.prepare('DELETE FROM interaction_vecs').run();
+      }
+      this.db.prepare('DELETE FROM interactions').run();
+    })();
+  }
+
   /** Close the database connection. */
   close(): void {
     this.db.close();
