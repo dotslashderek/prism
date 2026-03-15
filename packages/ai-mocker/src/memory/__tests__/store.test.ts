@@ -238,4 +238,41 @@ describe('MemoryStore', () => {
       expect(results[1].resSummary).toBe('far');
     });
   });
+
+  // ------------------------------------------------------------------
+  // 7. Idempotency — hasInteractions
+  // ------------------------------------------------------------------
+  describe('hasInteractions', () => {
+    it('returns false on an empty store', () => {
+      expect(store.hasInteractions()).toBe(false);
+    });
+
+    it('returns true after storing an interaction', () => {
+      store.store(makeInteraction());
+      expect(store.hasInteractions()).toBe(true);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // 8. Memory cleanup — clearMemory
+  // ------------------------------------------------------------------
+  describe('clearMemory', () => {
+    it('removes all interactions from the store', () => {
+      store.store(makeInteraction({ resSummary: 'one' }));
+      store.store(makeInteraction({ resSummary: 'two' }));
+      expect(store.hasInteractions()).toBe(true);
+
+      store.clearMemory();
+      expect(store.hasInteractions()).toBe(false);
+    });
+
+    it('makes search return empty results after clearing', () => {
+      const embedding = makeEmbedding(DIM, 0.1);
+      store.store(makeInteraction({ embedding }));
+      store.clearMemory();
+
+      const results = store.search(embedding, '/users', 10, 0);
+      expect(results).toHaveLength(0);
+    });
+  });
 });

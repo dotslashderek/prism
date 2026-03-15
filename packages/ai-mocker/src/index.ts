@@ -12,6 +12,9 @@ import { ResourceMutex, ResponseCache, createLimiter } from './util';
 
 export type { AiMockerConfig } from './config';
 export { defaultAiMockerConfig } from './config';
+export { initializeAiMocker } from './seed';
+export type { SeedConfig } from './seed/types';
+export { summarize } from './memory/summarizer';
 
 /** Async payload generator — mirrors Prism's PayloadGenerator but returns TaskEither. */
 export type AsyncPayloadGenerator = (
@@ -266,3 +269,6 @@ export const _resetSingletons = (): void => {
   singletonCache = null;
   singletonLimiter = null;
 };
+
+/** Expose singleton getters for the seed module. */
+export { getOrInitStore, getOrInitEmbedder, getOrInitChatModel };

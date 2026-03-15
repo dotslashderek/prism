@@ -106,6 +106,27 @@ async function createPrismServerWithLogger(options: CreateBaseServerOptions, log
     components: { logger: logInstance.child({ name: 'HTTP SERVER' }) },
   });
 
+  // AI Seeding — must complete before server starts accepting traffic
+  if (options.ai && !options.noSeed) {
+    try {
+      const { initializeAiMocker, getOrInitStore, getOrInitEmbedder, getOrInitChatModel, summarize } =
+        await import('@stoplight/prism-ai-mocker');
+
+      await initializeAiMocker(operations, {
+        store: getOrInitStore(),
+        embedder: getOrInitEmbedder(),
+        chatModel: getOrInitChatModel(),
+        summarizer: summarize,
+        logger: logInstance.child({ name: 'AI SEED' }),
+      }, {
+        scenariosContext: options.scenariosContext,
+        clearMemory: options.clearMemory,
+      });
+    } catch (seedErr) {
+      logInstance.warn({ err: String(seedErr) }, 'AI seeding failed — starting with empty state');
+    }
+  }
+
   const address = await server.listen(options.port, options.host);
   operations.forEach(resource => {
     const path = pipe(
@@ -168,6 +189,9 @@ type CreateBaseServerOptions = {
   ignoreExamples: boolean;
   seed: string;
   ai?: boolean;
+  scenariosContext?: string;
+  noSeed?: boolean;
+  clearMemory?: boolean;
   jsonSchemaFakerFillProperties: boolean;
 };
 
