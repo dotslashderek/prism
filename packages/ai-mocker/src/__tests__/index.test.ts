@@ -55,6 +55,10 @@ describe('createAiPayloadGenerator', () => {
     _resetSingletons();
   });
 
+  afterAll(() => {
+    _resetSingletons();
+  });
+
   it('returns a function matching AsyncPayloadGenerator signature', () => {
     const generator = createAiPayloadGenerator(fakeFallback, logger);
     expect(typeof generator).toBe('function');
@@ -73,15 +77,16 @@ describe('createAiPayloadGenerator', () => {
     expect(mockOrchestrate).toHaveBeenCalledTimes(1);
   });
 
-  it('returns TaskEither Left when orchestrate throws', async () => {
+  it('falls back to faker when orchestrate throws', async () => {
     mockOrchestrate.mockRejectedValue(new Error('orchestrate boom'));
 
     const generator = createAiPayloadGenerator(fakeFallback, logger);
     const result = await generator(simpleSchema)();
 
-    expect(E.isLeft(result)).toBe(true);
-    if (E.isLeft(result)) {
-      expect(result.left.message).toBe('orchestrate boom');
+    // Graceful degradation: orchestrate failure → faker fallback → Right
+    expect(E.isRight(result)).toBe(true);
+    if (E.isRight(result)) {
+      expect(result.right).toEqual({ name: 'faker-generated' });
     }
   });
 
@@ -123,5 +128,81 @@ describe('createAiPayloadGenerator', () => {
     await generator(simpleSchema)();
 
     expect(infoSpy).toHaveBeenCalledWith('AI mocker invoked');
+  });
+
+  describe('request threading', () => {
+    it('passes request method and path to orchestrate as operation', async () => {
+      mockOrchestrate.mockResolvedValue({ id: 1, name: 'Fido' });
+
+      const generator = createAiPayloadGenerator(fakeFallback, logger);
+      await generator(simpleSchema, {
+        method: 'POST',
+        path: '/pets',
+        body: { name: 'Fido' },
+      })();
+
+      expect(mockOrchestrate).toHaveBeenCalledWith(
+        'POST /pets',
+        expect.objectContaining({ method: 'POST', path: '/pets' }),
+        simpleSchema,
+        expect.anything(),
+      );
+    });
+
+    it('passes request body to orchestrate', async () => {
+      mockOrchestrate.mockResolvedValue({ id: 1, name: 'Fido' });
+      const requestBody = { name: 'Fido', tag: 'dog' };
+
+      const generator = createAiPayloadGenerator(fakeFallback, logger);
+      await generator(simpleSchema, {
+        method: 'POST',
+        path: '/pets',
+        body: requestBody,
+      })();
+
+      expect(mockOrchestrate).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ body: requestBody }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('passes pathParams and queryParams to orchestrate', async () => {
+      mockOrchestrate.mockResolvedValue({ id: 1, name: 'Fido' });
+
+      const generator = createAiPayloadGenerator(fakeFallback, logger);
+      await generator(simpleSchema, {
+        method: 'GET',
+        path: '/pets/123',
+        pathParams: { petId: '123' },
+        queryParams: { status: 'available' },
+      })();
+
+      expect(mockOrchestrate).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          pathParams: { petId: '123' },
+          queryParams: { status: 'available' },
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('falls back to placeholder when no request provided', async () => {
+      mockOrchestrate.mockResolvedValue({ name: 'test' });
+
+      const generator = createAiPayloadGenerator(fakeFallback, logger);
+      await generator(simpleSchema)();
+
+      // Without request arg, should use schema.title as operation
+      expect(mockOrchestrate).toHaveBeenCalledWith(
+        'User',
+        expect.objectContaining({ method: 'GET', path: '/User' }),
+        simpleSchema,
+        expect.anything(),
+      );
+    });
   });
 });

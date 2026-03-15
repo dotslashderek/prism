@@ -25,6 +25,7 @@ import { is } from 'type-is';
 import {
   ContentExample,
   IHttpMockConfig,
+  IHttpNameValues,
   IHttpOperationConfig,
   IHttpRequest,
   IHttpResponse,
@@ -70,9 +71,18 @@ const mock: IPrismComponents<IHttpOperation, IHttpRequest, IHttpResponse, IHttpM
   const syncPayloadGenerator: PayloadGenerator = (source: JSONSchema) => TE.fromEither(syncGenerator(source));
 
   return logger => {
-    const aiPayloadGenerator: PayloadGenerator = config.ai
+    const aiGenerator = config.ai
       ? createAiPayloadGenerator(syncGenerator, logger)
-      : syncPayloadGenerator;
+      : null;
+
+    const aiPayloadGenerator: PayloadGenerator = (source, request?) =>
+      aiGenerator ? aiGenerator(source, request ? {
+        method: request.method,
+        path: request.url.path,
+        body: request.body,
+        pathParams: extractPathParams(resource.path, request.url.path),
+        queryParams: convertQueryParams(request.url.query),
+      } : undefined) : syncPayloadGenerator(source);
 
     logRequest({ logger, prefix: `${chalk.grey('< ')}`, ...pick(input.data, 'body', 'headers') });
 
@@ -92,7 +102,7 @@ const mock: IPrismComponents<IHttpOperation, IHttpRequest, IHttpResponse, IHttpM
 
     return pipe(
       negotiationTE,
-      TE.chain(result => assembleResponse(result, aiPayloadGenerator, config.ignoreExamples ?? false)),
+      TE.chain(result => assembleResponse(result, aiPayloadGenerator, config.ignoreExamples ?? false, input.data)),
       TE.chain(response =>
         pipe(
           TE.right<Error, IHttpResponse>(mockResponseLogger(logger)(response)),
@@ -329,11 +339,12 @@ function negotiateDeprecation(
 const assembleResponse = (
   negotiationResult: IHttpNegotiationResult,
   payloadGenerator: PayloadGenerator,
-  ignoreExamples: boolean
+  ignoreExamples: boolean,
+  request?: IHttpRequest,
 ): TE.TaskEither<Error, IHttpResponse> =>
   pipe(
     TE.Do,
-    TE.bind('mockedBody', () => computeBody(negotiationResult, payloadGenerator, ignoreExamples)),
+    TE.bind('mockedBody', () => computeBody(negotiationResult, payloadGenerator, ignoreExamples, request)),
     TE.bind('mockedHeaders', () => computeMockedHeaders(negotiationResult.headers || [], payloadGenerator)),
     TE.map(({ mockedBody, mockedHeaders }) => {
       const response: IHttpResponse = {
@@ -397,7 +408,8 @@ function computeMockedHeaders(headers: IHttpHeaderParam[], payloadGenerator: Pay
 function computeBody(
   negotiationResult: Pick<IHttpNegotiationResult, 'schema' | 'mediaType' | 'bodyExample'>,
   payloadGenerator: PayloadGenerator,
-  ignoreExamples: boolean
+  ignoreExamples: boolean,
+  request?: IHttpRequest,
 ): TE.TaskEither<Error, unknown> {
   if (
     !ignoreExamples &&
@@ -407,7 +419,7 @@ function computeBody(
     return TE.right(negotiationResult.bodyExample.value);
   }
   if (negotiationResult.schema) {
-    return pipe(payloadGenerator(negotiationResult.schema), TE.mapLeft(mapPayloadGeneratorErrorFn('body')));
+    return pipe(payloadGenerator(negotiationResult.schema, request), TE.mapLeft(mapPayloadGeneratorErrorFn('body')));
   }
   return TE.right(undefined);
 }
@@ -422,5 +434,34 @@ const mapPayloadGeneratorErrorFn = (source: string) =>
     }
     return err;
   };
+
+/**
+ * Extract path parameters by comparing a template path against an actual path.
+ * Template segments like `{petId}` are matched against actual values.
+ */
+function extractPathParams(templatePath: string, actualPath: string): Record<string, string> {
+  const templateSegments = templatePath.split('/').filter(Boolean);
+  const actualSegments = actualPath.split('/').filter(Boolean);
+  const params: Record<string, string> = {};
+
+  templateSegments.forEach((seg, i) => {
+    if (seg.startsWith('{') && seg.endsWith('}') && i < actualSegments.length) {
+      params[seg.slice(1, -1)] = actualSegments[i];
+    }
+  });
+
+  return params;
+}
+
+/** Convert IHttpNameValues (Dictionary<string | string[]>) to Record<string, string>. */
+// TODO: support multi-value query params (e.g., ?status=available&status=pending)
+function convertQueryParams(query?: IHttpNameValues): Record<string, string> | undefined {
+  if (!query) return undefined;
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(query)) {
+    result[key] = Array.isArray(value) ? value[0] : value;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
 
 export default mock;

@@ -14,7 +14,16 @@ export type { AiMockerConfig } from './config';
 export { defaultAiMockerConfig } from './config';
 
 /** Async payload generator — mirrors Prism's PayloadGenerator but returns TaskEither. */
-export type AsyncPayloadGenerator = (schema: JSONSchema7) => TaskEither<Error, unknown>;
+export type AsyncPayloadGenerator = (
+  schema: JSONSchema7,
+  request?: {
+    method: string;
+    path: string;
+    body?: unknown;
+    pathParams?: Record<string, string>;
+    queryParams?: Record<string, string>;
+  },
+) => TaskEither<Error, unknown>;
 
 // Lazy singletons — initialized once on first call
 let singletonStore: MemoryStore | null = null;
@@ -180,15 +189,31 @@ export const createAiPayloadGenerator = (
     }
   }
 
-  return (schema: JSONSchema7): TaskEither<Error, unknown> => {
+  return (schema: JSONSchema7, incomingRequest?: {
+    method: string;
+    path: string;
+    body?: unknown;
+    pathParams?: Record<string, string>;
+    queryParams?: Record<string, string>;
+  }): TaskEither<Error, unknown> => {
     logger.info('AI mocker invoked');
 
-    // Build a placeholder HttpRequest from schema metadata
-    const operation = schema.title ?? 'unknown';
-    const request: HttpRequest = {
-      method: 'GET',
-      path: `/${operation}`,
-    };
+    // When real request is provided, use it; otherwise fall back to placeholder
+    const operation = incomingRequest
+      ? `${incomingRequest.method} ${incomingRequest.path}`
+      : (schema.title ?? 'unknown');
+    const request: HttpRequest = incomingRequest
+      ? {
+          method: incomingRequest.method,
+          path: incomingRequest.path,
+          body: incomingRequest.body,
+          pathParams: incomingRequest.pathParams,
+          queryParams: incomingRequest.queryParams,
+        }
+      : {
+          method: 'GET',
+          path: `/${schema.title ?? 'unknown'}`,
+        };
 
     const fakerFallback = (s: JSONSchema7): unknown => {
       const result = fallbackGenerator(s);
