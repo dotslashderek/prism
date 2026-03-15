@@ -1,6 +1,9 @@
 import { withTimeout, TimeoutError } from '../timeout';
 
 describe('withTimeout', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
   it('resolves when promise completes before timeout', async () => {
     const result = await withTimeout(Promise.resolve(42), 1000);
     expect(result).toBe(42);
@@ -8,14 +11,18 @@ describe('withTimeout', () => {
 
   it('rejects with TimeoutError when promise exceeds timeout', async () => {
     const slow = new Promise(resolve => setTimeout(resolve, 200));
-    await expect(withTimeout(slow, 10)).rejects.toThrow(TimeoutError);
+    const p = withTimeout(slow, 10);
+    jest.advanceTimersByTime(11);
+    await expect(p).rejects.toThrow(TimeoutError);
   });
 
   it('includes label in error message', async () => {
     const slow = new Promise(resolve => setTimeout(resolve, 200));
+    const p = withTimeout(slow, 10, 'embedding');
+    jest.advanceTimersByTime(11);
 
     try {
-      await withTimeout(slow, 10, 'embedding');
+      await p;
       fail('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(TimeoutError);
