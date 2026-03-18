@@ -24,6 +24,11 @@ packages/ai-mocker/
 │   ├── schema/
 │   │   ├── compliance.ts         # Ajv schema validation
 │   │   └── json-schema-to-zod.ts # Schema conversion utilities
+│   ├── seed/
+│   │   ├── index.ts              # Seed orchestrator (clear → check → plan → materialize)
+│   │   ├── planner.ts            # LLM-based scenario planner (structured output)
+│   │   ├── materializer.ts       # Persists plan steps with backdated timestamps
+│   │   └── types.ts              # SeedPlan, SeedConfig, SeedResult
 │   ├── util/
 │   │   ├── cache.ts              # LRU response cache
 │   │   ├── concurrency.ts        # ResourceMutex + LLM limiter
@@ -109,6 +114,37 @@ createAiPayloadGenerator()
 **Schema Sanitization** — Azure OpenAI's Structured Output mode enforces strict JSON Schema compliance. OpenAPI specs commonly include extensions like `xml`, `example`, and use `additionalProperties` freely. The `cleanForLlm()` function in `generator-agent.ts` recursively strips these before sending to the LLM. Ajv validation still uses the original schema.
 
 **`IOEither` → `TaskEither` Migration** — The original Prism mock pipeline was synchronous (`IOEither`). The AI mocker introduced async LLM calls, requiring an upgrade to `TaskEither` / `ReaderTaskEither` in the core factory. See `packages/core/src/factory.ts` line 65 and `packages/core/src/types.ts` line 53.
+
+### Scenario Seed Pipeline
+
+The seed pipeline runs **before** the HTTP server starts accepting traffic, pre-populating the memory database with coherent scenario data so the very first `GET` returns realistic results.
+
+```
+CLI (mock.ts)
+  └── createServer.ts
+        └── initializeAiMocker(operations, deps, config)
+              ├── 1. clearMemory?  → store.clearMemory()
+              ├── 2. idempotency   → skip if store.hasInteractions()
+              ├── 3. planSeed()    → LLM structured output → SeedPlan
+              └── 4. materializeSeed(plan)
+                    ├── resolvePlaceholders() → replace $id from prior steps
+                    ├── findOperationSchema() → match step to OpenAPI schema
+                    ├── generatorAgent()      → LLM generates response body
+                    └── store.store()         → persist with backdated timestamp
+```
+
+**Planner** (`seed/planner.ts`) — Sends the list of available API operations to the LLM via `withStructuredOutput` and receives a `SeedPlan` (3–8 ordered CRUD steps). The optional `scenariosContext` string is injected as a `## User Context` section in the system prompt, allowing users to steer the generated scenario (e.g. `"Swedish users"`).
+
+**Materializer** (`seed/materializer.ts`) — Iterates through the plan steps sequentially. For each step:
+1. Resolves `$id` placeholders using responses from prior steps (`dependsOnStep`)
+2. Finds the matching OpenAPI operation schema
+3. Calls `generatorAgent` to produce a schema-compliant response body
+4. Persists the interaction with a backdated timestamp (spread evenly over the last 24 hours so seed data ranks lower via recency decay)
+
+**CLI Wiring** — Three flags are defined in `packages/cli/src/commands/mock.ts` and threaded through `createServer.ts`:
+- `--scenarios-context` → `SeedConfig.scenariosContext`
+- `--clear-memory` → `SeedConfig.clearMemory`
+- `--no-seed` → skips the `initializeAiMocker()` call entirely
 
 ---
 
