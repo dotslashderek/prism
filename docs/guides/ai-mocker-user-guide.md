@@ -55,11 +55,60 @@ curl -s http://localhost:4010/store/order/7 | jq
 | Flag | Description |
 |---|---|
 | `--ai` | Enable AI-powered response generation (requires LLM credentials) |
+| `--scenarios-context <text>` | Custom context prompt for AI seed generation (e.g. `"Swedish users"`) |
+| `--no-seed` | Skip AI scenario seeding on startup |
+| `--clear-memory` | Wipe existing AI memory before seeding |
 | `--port <n>` | Server port (default: `4010`) |
 | `--host <addr>` | Bind address (default: `127.0.0.1`; use `0.0.0.0` for Docker) |
 | `--dynamic` | Use dynamic faker generation as the fallback strategy |
 
 All standard Prism flags (`--cors`, `--errors`, `--verboseLevel`, etc.) work alongside `--ai`.
+
+---
+
+## Scenario Seeding
+
+When you launch Prism with `--ai`, the server automatically **pre-seeds** the memory database with a coherent set of CRUD interactions before it starts accepting traffic. This means your very first `GET` request can return realistic, inter-related data — no manual setup required.
+
+### How It Works
+
+1. The **Seed Planner** sends your API's endpoint list to the LLM and asks it to generate a realistic 3–8 step scenario (e.g. "create a user, then create two posts for that user").
+2. The **Seed Materializer** walks through the plan, generating schema-compliant response bodies for each step and persisting them to the memory database with backdated timestamps.
+3. Future requests leverage this seed data as context, producing responses consistent with the pre-seeded state.
+
+### Steering the Seed with `--scenarios-context`
+
+Pass a natural-language prompt to influence the kind of data the LLM generates:
+
+```bash
+# Seed with Swedish-themed data
+prism mock petstore.yaml --ai --scenarios-context "All users should have Swedish names and addresses"
+
+# Seed with an e-commerce scenario
+prism mock shop-api.yaml --ai --scenarios-context "Create a scenario with 3 products, 2 customers, and 1 order"
+```
+
+The context is injected into the planner's LLM prompt, so you can be as specific or general as you like.
+
+### Idempotency & Re-seeding
+
+Seeding is **idempotent** — if the database already contains interactions, seeding is skipped automatically. To force a re-seed:
+
+```bash
+# Wipe memory and re-seed
+prism mock spec.yaml --ai --clear-memory
+
+# Wipe and re-seed with new context
+prism mock spec.yaml --ai --clear-memory --scenarios-context "French bakery inventory"
+```
+
+### Skipping Seeding Entirely
+
+If you don't want any pre-populated data and prefer to start from a completely blank state:
+
+```bash
+prism mock spec.yaml --ai --no-seed
+```
 
 ---
 
